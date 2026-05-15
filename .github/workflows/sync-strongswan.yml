@@ -1,0 +1,75 @@
+name: Sync StrongSwan APKs
+
+on:
+  schedule:
+    - cron: "0 3 * * *"  # 每天凌晨3点 UTC+0
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-apks:
+    runs-on: ubuntu-latest
+    steps:
+      # 1️⃣ Checkout
+      - uses: actions/checkout@v4
+
+      # 2️⃣ 安装工具
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y jq wget gh
+
+      # 3️⃣ 下载 StrongSwan APKs
+      - name: Download StrongSwan APKs with version
+        run: |
+          mkdir -p .github/apks
+          packages="org.strongswan.android"
+          for pkg in $packages; do
+            echo "Processing $pkg ..."
+            json=$(curl -s "https://f-droid.org/api/v1/packages/$pkg")
+            version=$(echo "$json" | jq -r '.suggestedVersionCode')
+            if [ "$version" = "null" ]; then
+              echo "No suggestedVersionCode for $pkg, skipping."
+              continue
+            fi
+            url="https://f-droid.org/repo/${pkg}_${version}.apk"
+            outfile=".github/apks/${pkg}_${version}.apk"
+            echo "Downloading $url -> $outfile"
+            wget -q -O "$outfile" "$url"
+          done
+
+      # 4️⃣ 清空 Release 的旧附件
+      - name: Clear old release assets
+        run: |
+          tag="latest-strongswan"
+          # 如果 release 存在
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # 删除所有附件
+            assets=$(gh release view "$tag" --json assets -q '.assets[].name')
+            for a in $assets; do
+              echo "Deleting $a ..."
+              gh release delete-asset "$tag" "$a" --yes
+            done
+          else
+            echo "Release $tag does not exist, will create new."
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.JIANG_PAT_TOKEN }}
+
+      # 5️⃣ 创建/更新 Release 并上传最新 APK
+      - name: Upload APKs to Release
+        run: |
+          tag="latest-strongswan"
+          # 如果 release 不存在就创建
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "StrongSwan APKs Latest" --notes "Daily sync from F-Droid"
+          fi
+          # 上传 APK
+          for apk in .github/apks/*.apk; do
+            echo "Uploading $apk ..."
+            gh release upload "$tag" "$apk" --clobber
+          done
+        env:
+          GH_TOKEN: ${{ secrets.JIANG_PAT_TOKEN }}
